@@ -132,7 +132,6 @@ function Mover:tween_to(targetCFrame: CFrame, speed: number?): Tween?
 		return nil
 	end
 
-	-- หากกำลัง Tween ไปเป้าหมายเดิมอยู่แล้ว ไม่ต้องเริ่มใหม่ ป้องกันการกระตุกเมื่อถูกเรียกซ้ำ
 	if self.isTweening and self.currentTween and self._targetCFrame and (self._targetCFrame.Position - targetCFrame.Position).Magnitude < 1 then
 		return self.currentTween
 	end
@@ -146,7 +145,6 @@ function Mover:tween_to(targetCFrame: CFrame, speed: number?): Tween?
 	local duration = math.max(distance / moveSpeed, 0.001)
 	local tweenInfo = TweenInfo.new(duration, Enum.EasingStyle.Linear)
 
-	-- ต้านแรงโน้มถ่วงและแรงเฉื่อยฟิสิกส์ให้เป็น 0 (Smooth โดยไม่ต้อง Anchored)
 	local bv = Instance.new("BodyVelocity")
 	bv.Name = "MoverVelocity"
 	bv.MaxForce = Vector3.new(9e9, 9e9, 9e9)
@@ -154,7 +152,6 @@ function Mover:tween_to(targetCFrame: CFrame, speed: number?): Tween?
 	bv.Parent = root
 	self._bodyVelocity = bv
 
-	-- ล็อคความเร็วและปิด CanCollide ชั่วคราว ป้องกันการชนสิ่งกีดขวาง/พื้นจนกล้องสั่น
 	self._stepConn = RunService.Stepped:Connect(function()
 		root.AssemblyLinearVelocity = Vector3.zero
 		root.AssemblyAngularVelocity = Vector3.zero
@@ -208,7 +205,7 @@ function Mover:walk_to(target: Vector3 | CFrame, timeout: number?): boolean
 	local maxDuration = timeout or math.max((targetPos - root.Position).Magnitude / walkSpeed + 5, 8)
 	local startTime = os.clock()
 
-	while self:_isValid() and self._walkId == currentId and (os.clock() - startTime) < maxDuration do
+	while self._walkId == currentId and not self._isDestroyed and self:_isValid() and (os.clock() - startTime) < maxDuration do
 		local currentPos = root.Position
 		local xzDist = Vector2.new(targetPos.X - currentPos.X, targetPos.Z - currentPos.Z).Magnitude
 		local yDist = math.abs(targetPos.Y - currentPos.Y)
@@ -263,8 +260,6 @@ function Mover:destroy()
 	self.character = nil :: any
 	self.rootPart = nil :: any
 	self.humanoid = nil :: any
-
-	setmetatable(self, nil)
 end
 
 return Mover
