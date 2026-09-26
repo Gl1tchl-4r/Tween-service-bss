@@ -10,12 +10,16 @@ export type MoverType = {
 	humanoid: Humanoid?,
 	speed: number,
 	isTweening: boolean,
+	isWalking: boolean,
 	currentTween: Tween?,
 	_connections: { [number]: RBXScriptConnection },
 	_tweenConn: RBXScriptConnection?,
+	_walkId: number,
 	_isDestroyed: boolean,
 
 	tween_to: (self: MoverType, targetCFrame: CFrame, speed: number?) -> Tween?,
+	walk_to: (self: MoverType, target: Vector3 | CFrame, timeout: number?) -> boolean,
+	walk_cancel: (self: MoverType) -> (),
 	teleport_to: (self: MoverType, targetCFrame: CFrame) -> boolean,
 	tween_cancel: (self: MoverType) -> (),
 	destroy: (self: MoverType) -> (),
@@ -29,14 +33,17 @@ function Mover.new(character: Model): MoverType
 	self.humanoid = character:FindFirstChildOfClass("Humanoid")
 	self.speed = 70
 	self.isTweening = false
+	self.isWalking = false
 	self.currentTween = nil
 	self._tweenConn = nil
 	self._connections = {}
+	self._walkId = 0
 	self._isDestroyed = false
 
 	if self.humanoid then
 		local deathConn = self.humanoid.Died:Connect(function()
 			self:tween_cancel()
+			self:walk_cancel()
 		end)
 		table.insert(self._connections, deathConn)
 	end
@@ -92,13 +99,24 @@ function Mover:tween_cancel()
 	end
 end
 
+function Mover:walk_cancel()
+	self._walkId += 1
+	self.isWalking = false
+
+	if self.humanoid and self.rootPart and self.rootPart.Parent then
+		self.humanoid:MoveTo(self.rootPart.Position)
+	end
+end
+
 function Mover:tween_to(targetCFrame: CFrame, speed: number?): Tween?
 	if not self:_isValid() then
 		self:tween_cancel()
+		self:walk_cancel()
 		return nil
 	end
 
 	self:tween_cancel()
+	self:walk_cancel()
 
 	local root = self.rootPart :: BasePart
 	local moveSpeed = (speed and speed > 0) and speed or self.speed or 70
@@ -133,8 +151,59 @@ function Mover:tween_to(targetCFrame: CFrame, speed: number?): Tween?
 	return tween
 end
 
+function Mover:walk_to(target: Vector3 | CFrame, timeout: number?): boolean
+	if not self:_isValid() or not self.humanoid then
+		return false
+	end
+
+	self:tween_cancel()
+	self:walk_cancel()
+
+	local targetPos: Vector3
+	if typeof(target) == "CFrame" then
+		targetPos = target.Position
+	elseif typeof(target) == "Vector3" then
+		targetPos = target
+	else
+		return false
+	end
+
+	local root = self.rootPart :: BasePart
+	local humanoid = self.humanoid :: Humanoid
+
+	root.Anchored = false
+
+	self.isWalking = true
+	local currentId = self._walkId
+
+	local walkSpeed = humanoid.WalkSpeed > 0 and humanoid.WalkSpeed or 16
+	local maxDuration = timeout or math.max((targetPos - root.Position).Magnitude / walkSpeed + 5, 8)
+	local startTime = os.clock()
+
+	while self:_isValid() and self._walkId == currentId and (os.clock() - startTime) < maxDuration do
+		local currentPos = root.Position
+		local xzDist = Vector2.new(targetPos.X - currentPos.X, targetPos.Z - currentPos.Z).Magnitude
+		local yDist = math.abs(targetPos.Y - currentPos.Y)
+
+		if xzDist <= 3.5 and yDist <= 6 then
+			self:walk_cancel()
+			return true
+		end
+
+		humanoid:MoveTo(targetPos)
+		task.wait(0.2)
+	end
+
+	if self._walkId == currentId then
+		self:walk_cancel()
+	end
+
+	return false
+end
+
 function Mover:teleport_to(targetCFrame: CFrame): boolean
 	self:tween_cancel()
+	self:walk_cancel()
 
 	if not self:_isValid() then
 		return false
@@ -154,6 +223,7 @@ function Mover:destroy()
 	self._isDestroyed = true
 
 	self:tween_cancel()
+	self:walk_cancel()
 
 	for _, conn in ipairs(self._connections) do
 		if conn.Connected then
