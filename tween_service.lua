@@ -31,6 +31,7 @@ function Mover.new(characterOrPlayer)
 	self._connections = {}
 	self._charConnections = {}
 	self._walkId = 0
+	self._charGen = 0 -- กันไม่ให้ตัวละครเก่าที่ยังรออยู่มาทับตัวใหม่ที่เกิดตามมา
 	self._isDestroyed = false
 
 	if player then
@@ -46,46 +47,55 @@ function Mover.new(characterOrPlayer)
 	return self
 end
 
+-- ตั้งตัวละครใหม่: เคลียร์ของเก่า/หยุดทุกอย่างทันที แล้วรอให้ตัวละครโหลดเสร็จ
+-- + กันชนอีก 2 วิ ก่อนจะถือว่า "พร้อมใช้งาน" จริง
+-- ระหว่างรอ rootPart/humanoid จะเป็น nil ทำให้ tween_to/walk_to/teleport_to ใช้งานไม่ได้
+-- (คืน false/nil เฉย ๆ) ต้องรอผู้ใช้เรียกฟังก์ชันเองอีกครั้งหลังจากพร้อมแล้ว ไม่มีการ resume อัตโนมัติ
 function Mover:set_character(character)
+	self:tween_cancel()
+	self:walk_cancel()
+
 	for _, conn in ipairs(self._charConnections) do
 		conn:Disconnect()
 	end
 	table.clear(self._charConnections)
 
 	self.character = character
-	self.rootPart = character:FindFirstChild("HumanoidRootPart") or character:WaitForChild("HumanoidRootPart", 5)
-	self.humanoid = character:FindFirstChildOfClass("Humanoid") or character:WaitForChild("Humanoid", 5)
+	self.rootPart = nil
+	self.humanoid = nil
 
-	if self.humanoid then
-		table.insert(self._charConnections, self.humanoid.Died:Connect(function()
-			self:tween_cancel()
-			self:walk_cancel()
-		end))
+	self._charGen += 1
+	local gen = self._charGen
+
+	local root = character:FindFirstChild("HumanoidRootPart") or character:WaitForChild("HumanoidRootPart", 5)
+	local humanoid = character:FindFirstChildOfClass("Humanoid") or character:WaitForChild("Humanoid", 5)
+
+	if self._isDestroyed or gen ~= self._charGen or not root or not humanoid or humanoid.Health <= 0 then
+		return
 	end
+
+	task.wait(2) -- กันชน ให้ตัวละครนิ่ง/โหลด asset ต่าง ๆ เสร็จก่อน
+
+	if self._isDestroyed or gen ~= self._charGen then
+		return
+	end
+
+	self.rootPart = root
+	self.humanoid = humanoid
+
+	table.insert(self._charConnections, humanoid.Died:Connect(function()
+		self:tween_cancel()
+		self:walk_cancel()
+		self.rootPart = nil
+		self.humanoid = nil
+	end))
 end
 
--- ตรวจสอบว่าตัวละครยังใช้งานได้อยู่ไหม ถ้าไม่ พยายามดึงตัวใหม่จาก player อัตโนมัติ
+-- เช็คสถานะปัจจุบันเฉย ๆ ไม่มีการดึงตัวละครใหม่มาสวมแทนอัตโนมัติ
 function Mover:_isValid()
-	if self._isDestroyed then
-		return false
-	end
-
-	if self.rootPart and self.rootPart.Parent and self.humanoid and self.humanoid.Health > 0 then
-		return true
-	end
-
-	local player = self.player or Players.LocalPlayer
-	local char = player and player.Character
-	if char and char:IsDescendantOf(workspace) then
-		local hum = char:FindFirstChildOfClass("Humanoid")
-		local root = char:FindFirstChild("HumanoidRootPart")
-		if hum and hum.Health > 0 and root then
-			self:set_character(char)
-			return true
-		end
-	end
-
-	return false
+	return not self._isDestroyed
+		and self.rootPart ~= nil and self.rootPart.Parent ~= nil
+		and self.humanoid ~= nil and self.humanoid.Health > 0
 end
 
 function Mover:tween_cancel()
@@ -129,6 +139,8 @@ end
 
 function Mover:tween_to(targetCFrame, speed)
 	if not self:_isValid() then
+		self:tween_cancel()
+		self:walk_cancel()
 		return nil
 	end
 
@@ -173,6 +185,8 @@ end
 
 function Mover:walk_to(target, timeout)
 	if not self:_isValid() then
+		self:tween_cancel()
+		self:walk_cancel()
 		return false
 	end
 
