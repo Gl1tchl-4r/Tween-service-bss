@@ -1,12 +1,14 @@
 --!strict
 local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
 
 local Mover = {}
 Mover.__index = Mover
 
 export type MoverType = {
-	character: Model,
+	character: Model?,
+	player: Player?,
 	rootPart: BasePart?,
 	humanoid: Humanoid?,
 	speed: number,
@@ -14,6 +16,7 @@ export type MoverType = {
 	isWalking: boolean,
 	currentTween: Tween?,
 	_connections: { [number]: RBXScriptConnection },
+	_charConnections: { [number]: RBXScriptConnection },
 	_tweenConn: RBXScriptConnection?,
 	_stepConn: RBXScriptConnection?,
 	_bodyVelocity: BodyVelocity?,
@@ -21,6 +24,7 @@ export type MoverType = {
 	_walkId: number,
 	_isDestroyed: boolean,
 
+	set_character: (self: MoverType, character: Model) -> (),
 	tween_to: (self: MoverType, targetCFrame: CFrame, speed: number?) -> Tween?,
 	walk_to: (self: MoverType, target: Vector3 | CFrame, timeout: number?) -> boolean,
 	walk_cancel: (self: MoverType) -> (),
@@ -29,12 +33,50 @@ export type MoverType = {
 	destroy: (self: MoverType) -> (),
 }
 
-function Mover.new(character: Model): MoverType
-	local self = setmetatable({}, Mover)
+function Mover:set_character(character: Model)
+	for _, conn in ipairs(self._charConnections) do
+		if conn.Connected then
+			conn:Disconnect()
+		end
+	end
+	table.clear(self._charConnections)
 
 	self.character = character
 	self.rootPart = (character:WaitForChild("HumanoidRootPart", 5) or character:FindFirstChild("HumanoidRootPart")) :: BasePart?
-	self.humanoid = character:FindFirstChildOfClass("Humanoid")
+	self.humanoid = (character:WaitForChild("Humanoid", 5) or character:FindFirstChildOfClass("Humanoid")) :: Humanoid?
+
+	if self.humanoid then
+		local deathConn = self.humanoid.Died:Connect(function()
+			self:tween_cancel()
+			self:walk_cancel()
+		end)
+		table.insert(self._charConnections, deathConn)
+	end
+end
+
+function Mover.new(characterOrPlayer: (Model | Player)?): MoverType
+	local self = setmetatable({}, Mover)
+
+	local player: Player? = nil
+	local initialChar: Model? = nil
+
+	if characterOrPlayer then
+		if characterOrPlayer:IsA("Player") then
+			player = characterOrPlayer
+			initialChar = characterOrPlayer.Character
+		elseif characterOrPlayer:IsA("Model") then
+			initialChar = characterOrPlayer
+			player = Players:GetPlayerFromCharacter(characterOrPlayer) or Players.LocalPlayer
+		end
+	else
+		player = Players.LocalPlayer
+		initialChar = player and player.Character
+	end
+
+	self.player = player
+	self.character = nil
+	self.rootPart = nil
+	self.humanoid = nil
 	self.speed = 70
 	self.isTweening = false
 	self.isWalking = false
@@ -44,46 +86,52 @@ function Mover.new(character: Model): MoverType
 	self._bodyVelocity = nil
 	self._targetCFrame = nil
 	self._connections = {}
+	self._charConnections = {}
 	self._walkId = 0
 	self._isDestroyed = false
 
-	if self.humanoid then
-		local deathConn = self.humanoid.Died:Connect(function()
-			self:tween_cancel()
-			self:walk_cancel()
+	if player then
+		local charAddedConn = player.CharacterAdded:Connect(function(newChar)
+			self:set_character(newChar)
 		end)
-		table.insert(self._connections, deathConn)
+		table.insert(self._connections, charAddedConn)
 	end
 
-	local ancestryConn = character.AncestryChanged:Connect(function(_, parent)
-		if not parent or not character:IsDescendantOf(workspace) then
-			self:destroy()
-		end
-	end)
-	table.insert(self._connections, ancestryConn)
-
-	local destroyingConn = character.Destroying:Connect(function()
-		self:destroy()
-	end)
-	table.insert(self._connections, destroyingConn)
+	if initialChar then
+		self:set_character(initialChar)
+	end
 
 	return (self :: any) :: MoverType
 end
 
-function Mover:_isValid(): boolean
+function Mover:_ensureValid(): boolean
 	if self._isDestroyed then
 		return false
 	end
-	if not self.character or not self.character.Parent or not self.character:IsDescendantOf(workspace) then
-		return false
+
+	if self.character and self.character.Parent and self.character:IsDescendantOf(workspace)
+		and self.rootPart and self.rootPart.Parent
+		and self.humanoid and self.humanoid.Parent and self.humanoid.Health > 0 then
+		return true
 	end
-	if not self.rootPart or not self.rootPart.Parent then
-		return false
+
+	-- หากตัวละครเดิมตายหรือยังไม่ผูก ให้ดึงตัวละครล่าสุดที่พร้อมใช้งาน
+	local player = self.player or Players.LocalPlayer
+	local char = player and player.Character
+	if char and char:IsDescendantOf(workspace) then
+		local hum = char:FindFirstChildOfClass("Humanoid")
+		local root = char:FindFirstChild("HumanoidRootPart")
+		if hum and hum.Health > 0 and root then
+			self:set_character(char)
+			return true
+		end
 	end
-	if self.humanoid and self.humanoid.Health <= 0 then
-		return false
-	end
-	return true
+
+	return false
+end
+
+function Mover:_isValid(): boolean
+	return self:_ensureValid()
 end
 
 function Mover:tween_cancel()
@@ -179,7 +227,7 @@ function Mover:tween_to(targetCFrame: CFrame, speed: number?): Tween?
 end
 
 function Mover:walk_to(target: Vector3 | CFrame, timeout: number?): boolean
-	if not self:_isValid() or not self.humanoid then
+	if not self:_ensureValid() then
 		return false
 	end
 
@@ -257,9 +305,17 @@ function Mover:destroy()
 	end
 	table.clear(self._connections)
 
+	for _, conn in ipairs(self._charConnections) do
+		if conn.Connected then
+			conn:Disconnect()
+		end
+	end
+	table.clear(self._charConnections)
+
 	self.character = nil :: any
 	self.rootPart = nil :: any
 	self.humanoid = nil :: any
+	self.player = nil :: any
 end
 
 return Mover
